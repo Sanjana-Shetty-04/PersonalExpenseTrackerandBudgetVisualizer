@@ -503,3 +503,103 @@ COMMIT;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+-- Change database collation
+ALTER DATABASE budget_tracker CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- Convert all tables to match collation
+ALTER TABLE budget CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE categories CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE expenses CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE income CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE notifications CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE recurring_transactions CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE transactions CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+ALTER TABLE users CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- Drop existing triggers
+DROP TRIGGER IF EXISTS check_positive_budget_limit;
+DROP TRIGGER IF EXISTS after_expense_budget_check;
+DROP TRIGGER IF EXISTS after_expense_insert;
+DROP TRIGGER IF EXISTS check_positive_amount_expense;
+DROP TRIGGER IF EXISTS after_income_insert;
+DROP TRIGGER IF EXISTS check_positive_amount_income;
+DROP TRIGGER IF EXISTS update_user_timestamp;
+
+-- Recreate triggers (copy from your budget_tracker.sql)
+DELIMITER $$
+CREATE TRIGGER `check_positive_budget_limit` BEFORE INSERT ON `budget` FOR EACH ROW BEGIN
+    IF NEW.limit_amount <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Budget limit must be positive';
+    END IF;
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `after_expense_budget_check` AFTER INSERT ON `expenses` FOR EACH ROW BEGIN
+    DECLARE budget_limit DECIMAL(10,2);
+    DECLARE total_expenses DECIMAL(10,2);
+    DECLARE current_month VARCHAR(7);
+    
+    SET current_month = DATE_FORMAT(NEW.date, '%Y-%m');
+    
+    SELECT limit_amount INTO budget_limit
+    FROM budget
+    WHERE user_id = NEW.user_id
+      AND category = NEW.category
+      AND month_year = current_month;
+    
+    IF budget_limit IS NOT NULL THEN
+        SELECT COALESCE(SUM(amount), 0) INTO total_expenses
+        FROM expenses
+        WHERE user_id = NEW.user_id
+          AND category = NEW.category
+          AND DATE_FORMAT(date, '%Y-%m') = current_month;
+        
+        IF total_expenses > budget_limit THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Budget limit exceeded for this category';
+        END IF;
+    END IF;
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `after_expense_insert` AFTER INSERT ON `expenses` FOR EACH ROW BEGIN
+    INSERT INTO transactions (user_id, type, category, amount, date)
+    VALUES (NEW.user_id, 'expense', NEW.category, NEW.amount, NEW.date);
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `check_positive_amount_expense` BEFORE INSERT ON `expenses` FOR EACH ROW BEGIN
+    IF NEW.amount <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Expense amount must be positive';
+    END IF;
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `after_income_insert` AFTER INSERT ON `income` FOR EACH ROW BEGIN
+    INSERT INTO transactions (user_id, type, category, amount, date)
+    VALUES (NEW.user_id, 'income', NEW.source, NEW.amount, NEW.date);
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `check_positive_amount_income` BEFORE INSERT ON `income` FOR EACH ROW BEGIN
+    IF NEW.amount <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Income amount must be positive';
+    END IF;
+END
+$$
+DELIMITER ;
+
+DELIMITER $$
+CREATE TRIGGER `update_user_timestamp` BEFORE UPDATE ON `users` FOR EACH ROW BEGIN
+    SET NEW.updated_at = CURRENT_TIMESTAMP;
+END
+$$
+DELIMITER ;
